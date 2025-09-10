@@ -1,231 +1,109 @@
 pipeline {
     agent any
     
-    parameters {
-        choice(
-            name: 'TEST_MODE',
-            choices: ['auto', 'force_approval', 'skip_secrets', 'test_secrets'],
-            description: 'Testing mode for pipeline behavior'
-        )
-    }
-    
-    environment {
-        BRANCH_NAME = "${env.GIT_BRANCH ?: 'main'}"
-        PR_AUTHOR = "${env.CHANGE_AUTHOR ?: env.BUILD_USER_ID ?: 'unknown'}"
-        PIPELINE_STATUS = "pending"
-    }
-    
     stages {
         stage('PR Ready to Main') {
             steps {
-                script {
-                    echo "🚀 PR Ready to Main - Pipeline Started"
-                    echo "====================================="
-                    echo "📋 Pipeline Information:"
-                    echo "  Branch: ${env.BRANCH_NAME}"
-                    echo "  Author: ${env.PR_AUTHOR}"
-                    echo "  Build: #${env.BUILD_NUMBER}"
-                    echo "  Test Mode: ${params.TEST_MODE}"
-                    echo "====================================="
-                    
-                    // Checkout code
-                    checkout scm
-                    
-                    // Get commit info
-                    try {
-                        def commitInfo = sh(
-                            script: "git log -1 --pretty=format:'%an|%s'",
-                            returnStdout: true
-                        ).trim().split('\\|')
-                        
-                        env.COMMIT_AUTHOR = commitInfo[0]
-                        env.COMMIT_MESSAGE = commitInfo[1]
-                        
-                        echo "📝 Latest Commit:"
-                        echo "  Author: ${env.COMMIT_AUTHOR}"
-                        echo "  Message: ${env.COMMIT_MESSAGE}"
-                    } catch (Exception e) {
-                        echo "⚠️ Could not get commit info: ${e.message}"
-                    }
-                    
-                    // Show repository contents for debugging
-                    echo "📁 Repository Contents:"
-                    sh 'ls -la'
-                }
+                echo "🚀 PR Ready to Main - Starting Pipeline"
+                checkout scm
+                sh 'ls -la'
+                echo "✅ Code checked out successfully"
             }
         }
         
         stage('Check the Secrets') {
             steps {
                 script {
-                    echo "🔍 Check the Secrets - Scanning Repository"
-                    echo "========================================"
-                    
-                    if (params.TEST_MODE == 'skip_secrets') {
-                        echo "🧪 TEST MODE: Skipping secret scanning"
-                        env.SECRETS_STATUS = "not_found"
-                        return
-                    }
-                    
-                    // List files being scanned
-                    echo "📄 Files to scan:"
-                    sh 'find . -type f -not -path "./.git/*" -not -name "Jenkinsfile*" | head -20'
-                    
-                    // Define secret patterns to detect
-                    def secretPatterns = [
-                        'password\\s*[:=]\\s*["\']?[^\\s"\']{3,}',
-                        'api[_-]?key\\s*[:=]\\s*["\']?[^\\s"\']{10,}',
-                        'secret\\s*[:=]\\s*["\']?[^\\s"\']{6,}',
-                        'token\\s*[:=]\\s*["\']?[^\\s"\']{10,}',
-                        'aws[_-]?access[_-]?key\\s*[:=]\\s*["\']?[A-Z0-9]{16,}',
-                        'sk-[a-zA-Z0-9]{20,}',     // OpenAI API keys
-                        'ghp_[a-zA-Z0-9]{36}',     // GitHub tokens
-                        'BEGIN\\s+PRIVATE\\s+KEY', // Private keys
-                        '[a-fA-F0-9]{32,}',        // Hex strings (potential keys)
-                        '[A-Za-z0-9+/]{40,}={0,2}' // Base64 strings (potential keys)
-                    ]
+                    echo "🔍 Checking for secrets in repository..."
                     
                     def foundSecrets = false
-                    def secretDetails = []
                     
-                    // Check each pattern
-                    for (pattern in secretPatterns) {
-                        try {
-                            def result = sh(
-                                script: """
-                                    grep -r -i -E '${pattern}' . \\
-                                        --exclude-dir=.git \\
-                                        --exclude='*.log' \\
-                                        --exclude='Jenkinsfile*' \\
-                                        --exclude-dir=.jenkins \\
-                                        --max-count=5 \\
-                                        2>/dev/null || true
-                                """,
-                                returnStdout: true
-                            ).trim()
-                            
-                            if (result) {
-                                echo "🚨 SECRET DETECTED - Pattern: ${pattern}"
-                                echo "📍 Location: ${result}"
-                                foundSecrets = true
-                                secretDetails.add("Pattern: ${pattern} | Location: ${result}")
-                            }
-                        } catch (Exception e) {
-                            echo "⚠️ Error checking pattern ${pattern}: ${e.message}"
+                    // Check for config.txt (your test file)
+                    if (fileExists('config.txt')) {
+                        echo "Found config.txt - checking contents"
+                        def content = readFile('config.txt')
+                        echo "Content: ${content}"
+                        
+                        if (content.contains('key') || content.contains('secret') || content.contains('token')) {
+                            foundSecrets = true
+                            echo "🚨 SECRETS FOUND in config.txt"
                         }
                     }
                     
-                    // Special check for common secret files
-                    def secretFiles = ['config.txt', 'secrets.txt', '.env', 'credentials.json']
-                    for (file in secretFiles) {
-                        if (fileExists(file)) {
-                            echo "🔍 Checking suspicious file: ${file}"
-                            try {
-                                def content = readFile(file)
-                                echo "📄 ${file} content preview: ${content.take(200)}..."
-                                
-                                if (content.toLowerCase().contains('key') || 
-                                    content.toLowerCase().contains('secret') || 
-                                    content.toLowerCase().contains('password') ||
-                                    content.toLowerCase().contains('token')) {
-                                    echo "🚨 SUSPICIOUS CONTENT in ${file}"
-                                    foundSecrets = true
-                                    secretDetails.add("Suspicious file: ${file}")
-                                }
-                            } catch (Exception e) {
-                                echo "⚠️ Could not read ${file}: ${e.message}"
-                            }
-                        }
+                    // Simple grep for common secret patterns
+                    def grepResult = sh(
+                        script: "grep -r -i 'password\\|api.*key\\|secret\\|token' . --exclude-dir=.git --exclude='Jenkinsfile*' || true",
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (grepResult) {
+                        echo "🚨 POTENTIAL SECRETS FOUND:"
+                        echo "${grepResult}"
+                        foundSecrets = true
                     }
                     
-                    echo "========================================"
-                    
-                    if (foundSecrets) {
-                        echo "❌ SECRETS FOUND - Setting status to 'found'"
-                        env.SECRETS_STATUS = "found"
-                        env.SECRET_DETAILS = secretDetails.join(' | ')
-                        echo "🚨 Secret Details: ${env.SECRET_DETAILS}"
-                    } else {
-                        echo "✅ NO SECRETS DETECTED - Setting status to 'not_found'"
-                        env.SECRETS_STATUS = "not_found"
-                    }
-                    
-                    echo "🔍 Secrets Check Complete: ${env.SECRETS_STATUS}"
+                    env.SECRETS_FOUND = foundSecrets.toString()
+                    echo "Secrets check result: ${env.SECRETS_FOUND}"
                 }
             }
         }
         
         stage('PR Reject') {
             when {
-                expression { env.SECRETS_STATUS == "found" }
+                expression { env.SECRETS_FOUND == 'true' }
             }
             steps {
-                script {
-                    echo "❌ PR REJECT - Secrets Detected"
-                    echo "=============================="
-                    echo "🚨 This PR cannot be merged due to exposed secrets!"
-                    echo "📋 Secret Details: ${env.SECRET_DETAILS}"
-                    echo "🔧 Action Required:"
-                    echo "   1. Remove all secrets from your code"
-                    echo "   2. Use environment variables or secure vaults"
-                    echo "   3. Commit the cleaned code"
-                    echo "   4. Re-run the pipeline"
-                    echo "=============================="
-                    
-                    env.PIPELINE_STATUS = "rejected_secrets"
-                    
-                    // Create rejection report
-                    writeFile(
-                        file: 'SECRET_SCAN_REPORT.txt',
-                        text: """
-SECRET SCAN REJECTION REPORT
-===========================
-Date: ${new Date()}
-Branch: ${env.BRANCH_NAME}
-Build: #${env.BUILD_NUMBER}
-Author: ${env.COMMIT_AUTHOR}
-
-SECRETS DETECTED:
-${env.SECRET_DETAILS}
-
-ACTION REQUIRED:
-- Remove all secrets from code
-- Use environment variables or secure storage
-- Commit cleaned code and retry
-
-This PR is automatically rejected for security reasons.
-                        """
-                    )
-                    
-                    error("❌ PR REJECTED: Secrets detected in repository")
-                }
+                echo "❌ PR REJECTED - Secrets detected!"
+                echo "🚨 Please remove secrets before merging"
+                error("Pipeline failed due to secrets in code")
             }
         }
         
-        stage('Not Found') {
+        stage('Not Found - Request Approval') {
             when {
-                expression { env.SECRETS_STATUS == "not_found" }
+                expression { env.SECRETS_FOUND == 'false' }
             }
             steps {
                 script {
-                    echo "✅ Not Found - No Secrets Detected"
-                    echo "================================="
-                    echo "🎉 Security scan passed!"
-                    echo "✅ No secrets found in repository"
-                    echo "📋 Ready to proceed to approval process"
-                    echo "================================="
+                    echo "✅ No secrets found - requesting approval"
                     
-                    env.PIPELINE_STATUS = "security_passed"
-                    
-                    // Create success report
-                    writeFile(
-                        file: 'SECRET_SCAN_REPORT.txt',
-                        text: """
-SECRET SCAN SUCCESS REPORT
-=========================
-Date: ${new Date()}
-Branch: ${env.BRANCH_NAME}
-Build: #${env.BUILD_NUMBER}
-Author: ${env.COMMIT_AUTHOR}
-
-RESULT
+                    try {
+                        timeout(time: 5, unit: 'MINUTES') {
+                            def approval = input(
+                                message: 'Review Required for Main Branch',
+                                parameters: [
+                                    choice(
+                                        name: 'DECISION',
+                                        choices: ['APPROVE', 'REJECT'],
+                                        description: 'Approve or reject this PR'
+                                    )
+                                ],
+                                submitterParameter: 'REVIEWER'
+                            )
+                            
+                            if (approval.DECISION == 'APPROVE') {
+                                echo "✅ PR APPROVED by ${approval.REVIEWER}"
+                                echo "🎉 Ready to merge!"
+                            } else {
+                                echo "❌ PR REJECTED by ${approval.REVIEWER}"
+                                error("PR rejected by reviewer")
+                            }
+                        }
+                    } catch (Exception e) {
+                        echo "⏰ Approval timeout"
+                        error("No approval received")
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "🎉 Pipeline completed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed!"
+        }
+    }
+}
