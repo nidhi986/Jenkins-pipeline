@@ -22,11 +22,14 @@ pipeline {
                     if (fileExists('config.txt')) {
                         echo "Found config.txt - checking contents"
                         def content = readFile('config.txt')
-                        echo "Content: ${content}"
+                        echo "Content preview: ${content.take(100)}"
                         
-                        if (content.contains('key') || content.contains('secret') || content.contains('token')) {
+                        if (content.toLowerCase().contains('key') || 
+                            content.toLowerCase().contains('secret') || 
+                            content.toLowerCase().contains('token') ||
+                            content.toLowerCase().contains('password')) {
                             foundSecrets = true
-                            echo "🚨 SECRETS FOUND in config.txt"
+                            echo "🚨 SECRETS DETECTED in config.txt"
                         }
                     }
                     
@@ -42,68 +45,48 @@ pipeline {
                         foundSecrets = true
                     }
                     
-                    env.SECRETS_FOUND = foundSecrets.toString()
-                    echo "Secrets check result: ${env.SECRETS_FOUND}"
+                    if (foundSecrets) {
+                        echo "❌ SECRETS DETECTED - Pipeline will REJECT"
+                        env.SECRETS_STATUS = "found"
+                    } else {
+                        echo "✅ NO SECRETS DETECTED - Pipeline will SUCCEED"
+                        env.SECRETS_STATUS = "not_found"
+                    }
                 }
             }
         }
         
         stage('PR Reject') {
             when {
-                expression { env.SECRETS_FOUND == 'true' }
+                expression { env.SECRETS_STATUS == "found" }
             }
             steps {
-                echo "❌ PR REJECTED - Secrets detected!"
-                echo "🚨 Please remove secrets before merging"
-                error("Pipeline failed due to secrets in code")
+                echo "❌ PR AUTOMATICALLY REJECTED"
+                echo "🚨 Reason: Secrets detected in repository"
+                echo "🔧 Action Required: Remove all secrets and push again"
+                error("PR rejected due to secrets in code")
             }
         }
         
-        stage('Not Found - Request Approval') {
+        stage('Not Found - Auto Approve') {
             when {
-                expression { env.SECRETS_FOUND == 'false' }
+                expression { env.SECRETS_STATUS == "not_found" }
             }
             steps {
-                script {
-                    echo "✅ No secrets found - requesting approval"
-                    
-                    try {
-                        timeout(time: 5, unit: 'MINUTES') {
-                            def approval = input(
-                                message: 'Review Required for Main Branch',
-                                parameters: [
-                                    choice(
-                                        name: 'DECISION',
-                                        choices: ['APPROVE', 'REJECT'],
-                                        description: 'Approve or reject this PR'
-                                    )
-                                ],
-                                submitterParameter: 'REVIEWER'
-                            )
-                            
-                            if (approval.DECISION == 'APPROVE') {
-                                echo "✅ PR APPROVED by ${approval.REVIEWER}"
-                                echo "🎉 Ready to merge!"
-                            } else {
-                                echo "❌ PR REJECTED by ${approval.REVIEWER}"
-                                error("PR rejected by reviewer")
-                            }
-                        }
-                    } catch (Exception e) {
-                        echo "⏰ Approval timeout"
-                        error("No approval received")
-                    }
-                }
+                echo "✅ NO SECRETS FOUND"
+                echo "🎉 PR AUTOMATICALLY APPROVED"
+                echo "✅ Ready to merge - no manual approval needed"
+                echo "🚀 Pipeline completed successfully"
             }
         }
     }
     
     post {
         success {
-            echo "🎉 Pipeline completed successfully!"
+            echo "🎉 Pipeline SUCCESS: PR can be merged safely"
         }
         failure {
-            echo "❌ Pipeline failed!"
+            echo "❌ Pipeline FAILED: PR blocked due to security issues"
         }
     }
 }
