@@ -1,5 +1,10 @@
 pipeline {
-    agent any   // <-- This was missing. You can also use 'label' if you want a specific node.
+    agent any   // Run on any available Jenkins agent
+
+    environment {
+        // You can set environment variables here if needed
+        // For example, PATH for custom tools
+    }
 
     stages {
         stage('Checkout') {
@@ -7,29 +12,41 @@ pipeline {
                 checkout scm
             }
         }
-        stage('Install Gitleaks') {
-            steps {
-                sh """
-                  wget https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64
-                  chmod +x gitleaks-linux-amd64
-                  mv gitleaks-linux-amd64 /usr/local/bin/gitleaks
-                """
-            }
-        }
+
         stage('Scan for Secrets') {
             steps {
                 script {
-                    def status = sh(returnStatus: true, script: "gitleaks detect --source . --exit-code 1")
+                    echo "🔍 Running Gitleaks to scan for secrets..."
+
+                    // Using Docker image for Gitleaks
+                    def status = sh(
+                        script: """
+                            docker run --rm -v \$(pwd):/code zricethezav/gitleaks:8.28.0 \
+                            detect --source /code --exit-code 1 --report-format json --report-path gitleaks-report.json
+                        """,
+                        returnStatus: true
+                    )
+
                     if (status != 0) {
                         error("❌ Gitleaks found exposed secrets! Failing the build.")
+                    } else {
+                        echo "✅ No secrets found."
                     }
                 }
             }
         }
     }
+
     post {
         always {
+            // Archive the Gitleaks report for auditing, even if the build fails
             archiveArtifacts artifacts: 'gitleaks-report.json', onlyIfSuccessful: false
+        }
+        success {
+            echo "🎉 Pipeline completed successfully!"
+        }
+        failure {
+            echo "⚠️ Pipeline failed due to exposed secrets."
         }
     }
 }
