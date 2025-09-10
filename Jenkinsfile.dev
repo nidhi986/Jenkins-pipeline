@@ -1,0 +1,52 @@
+pipeline {
+    agent {
+        // You can use 'any', or a specific Docker image, or a node label that
+        // has Gitleaks installed.
+        any
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage('Install Gitleaks (if needed)') {
+            steps {
+                sh """
+                  # Option 1: Download the latest Gitleaks binary
+                  # (Make sure you pick the right OS/architecture)
+                  wget https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64
+                  chmod +x gitleaks-linux-amd64
+                  mv gitleaks-linux-amd64 /usr/local/bin/gitleaks
+                """
+            }
+        }
+        stage('Scan for Secrets') {
+            steps {
+                // Example command
+                sh """
+                  # Run Gitleaks on the local repo
+                  gitleaks detect --source . --exit-code 1 --report gitleaks-report.json || true
+
+                  # The above command sets exit code 1 if a leak is found, so we store the result
+                  # to decide ourselves or we can remove '|| true' and let it fail the build automatically.
+                """
+
+                // Then read the exit code or the report
+                script {
+                    def status = sh(returnStatus: true, script: "gitleaks detect --source . --exit-code 1")
+                    if (status != 0) {
+                        // Fail the build if secrets are found
+                        error("Gitleaks found exposed secrets! Failing the build.")
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Archive Gitleaks report for auditing
+            archiveArtifacts artifacts: 'gitleaks-report.json', onlyIfSuccessful: false
+        }
+    }
+}
