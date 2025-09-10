@@ -1,11 +1,6 @@
 pipeline {
     agent any   // Run on any available Jenkins agent
 
-    environment {
-        // You can set environment variables here if needed
-        // For example, PATH for custom tools
-    }
-
     stages {
         stage('Checkout') {
             steps {
