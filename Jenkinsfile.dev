@@ -1,26 +1,24 @@
 pipeline {
     agent any
-    triggers {
-        githubPush()  // Triggers on push events
-    }
+    
     stages {
-        stage('PR Ready to Main') {
+        stage('PR ready to main') {
             steps {
-                echo "🚀 PR Ready to Main - Starting Pipeline"
+                echo "PR ready to main - Starting Pipeline"
                 checkout scm
                 sh 'ls -la'
-                echo "✅ Code checked out successfully"
+                echo "Code checked out successfully"
             }
         }
         
-        stage('Check the Secrets') {
+        stage('Check the secrets') {
             steps {
                 script {
-                    echo "🔍 Checking for secrets in repository..."
+                    echo "Checking for secrets in repository..."
                     
                     def foundSecrets = false
                     
-                    // Check for config.txt (your test file)
+                    // Check for config.txt
                     if (fileExists('config.txt')) {
                         echo "Found config.txt - checking contents"
                         def content = readFile('config.txt')
@@ -31,7 +29,7 @@ pipeline {
                             content.toLowerCase().contains('token') ||
                             content.toLowerCase().contains('password')) {
                             foundSecrets = true
-                            echo "🚨 SECRETS DETECTED in config.txt"
+                            echo "SECRETS DETECTED in config.txt"
                         }
                     }
                     
@@ -42,53 +40,107 @@ pipeline {
                     ).trim()
                     
                     if (grepResult) {
-                        echo "🚨 POTENTIAL SECRETS FOUND:"
+                        echo "POTENTIAL SECRETS FOUND:"
                         echo "${grepResult}"
                         foundSecrets = true
                     }
                     
                     if (foundSecrets) {
-                        echo "❌ SECRETS DETECTED - Pipeline will REJECT"
+                        echo "SECRETS DETECTED - Pipeline will go to FOUND path"
                         env.SECRETS_STATUS = "found"
                     } else {
-                        echo "✅ NO SECRETS DETECTED - Pipeline will SUCCEED"
+                        echo "NO SECRETS DETECTED - Pipeline will go to NOT FOUND path"
                         env.SECRETS_STATUS = "not_found"
                     }
                 }
             }
         }
         
-        stage('PR Reject') {
+        stage('found') {
             when {
                 expression { env.SECRETS_STATUS == "found" }
             }
             steps {
-                echo "❌ PR AUTOMATICALLY REJECTED"
-                echo "🚨 Reason: Secrets detected in repository"
-                echo "🔧 Action Required: Remove all secrets and push again"
+                echo "Path: FOUND - Secrets detected"
+                // This leads to PR reject stage
+            }
+        }
+        
+        stage('PR reject') {
+            when {
+                expression { env.SECRETS_STATUS == "found" }
+            }
+            steps {
+                echo "PR AUTOMATICALLY REJECTED"
+                echo "Reason: Secrets detected in repository"
+                echo "Action Required: Remove all secrets and push again"
                 error("PR rejected due to secrets in code")
             }
         }
         
-        stage('Not Found - Auto Approve') {
+        stage('Not found') {
             when {
                 expression { env.SECRETS_STATUS == "not_found" }
             }
             steps {
-                echo "✅ NO SECRETS FOUND"
-                echo "🎉 PR AUTOMATICALLY APPROVED"
-                echo "✅ Ready to merge - no manual approval needed"
-                echo "🚀 Pipeline completed successfully"
+                echo "Path: NOT FOUND - No secrets detected"
+                echo "Proceeding to review step..."
+            }
+        }
+        
+        stage('Review can approve the request and merge it') {
+            when {
+                expression { env.SECRETS_STATUS == "not_found" }
+            }
+            steps {
+                script {
+                    echo "MANUAL REVIEW REQUIRED"
+                    echo "No secrets found - requesting human approval"
+                    
+                    try {
+                        timeout(time: 10, unit: 'MINUTES') {
+                            def approval = input(
+                                message: 'No secrets detected. Approve this PR for merge?',
+                                parameters: [
+                                    choice(
+                                        name: 'DECISION',
+                                        choices: ['APPROVE', 'REJECT'],
+                                        description: 'Review the code and decide'
+                                    ),
+                                    string(
+                                        name: 'REVIEWER_COMMENTS',
+                                        defaultValue: '',
+                                        description: 'Optional review comments'
+                                    )
+                                ],
+                                submitterParameter: 'REVIEWER'
+                            )
+                            
+                            if (approval.DECISION == 'APPROVE') {
+                                echo "PR APPROVED by ${approval.REVIEWER}"
+                                echo "Comments: ${approval.REVIEWER_COMMENTS}"
+                                echo "Ready to merge!"
+                            } else {
+                                echo "PR REJECTED by ${approval.REVIEWER}"
+                                echo "Comments: ${approval.REVIEWER_COMMENTS}"
+                                error("PR rejected by reviewer")
+                            }
+                        }
+                    } catch (Exception e) {
+                        echo "Review timeout - no approval received"
+                        error("No approval received within timeout period")
+                    }
+                }
             }
         }
     }
     
     post {
         success {
-            echo "🎉 Pipeline SUCCESS: PR can be merged safely"
+            echo "Pipeline SUCCESS: PR approved and ready to merge"
         }
         failure {
-            echo "❌ Pipeline FAILED: PR blocked due to security issues"
+            echo "Pipeline FAILED: PR blocked"
         }
     }
 }
