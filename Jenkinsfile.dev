@@ -1,38 +1,13 @@
 pipeline {
     agent any
     
-    triggers {
-        GenericTrigger(
-            genericVariables: [
-                [key: 'action', value: '$.action'],
-                [key: 'number', value: '$.number'],
-                [key: 'title', value: '$.pull_request.title'],
-                [key: 'base_ref', value: '$.pull_request.base.ref'],
-                [key: 'head_ref', value: '$.pull_request.head.ref']
-            ],
-            causeString: 'Triggered by GitHub PR #$number: $title',
-            token: 'github-pr-webhook',
-            printContributedVariables: true,
-            printPostContent: true,
-            regexpFilterText: '$action $base_ref',
-            regexpFilterExpression: '^(opened|synchronize|reopened) main$'
-        )
-    }
-    
     stages {
         stage('PR ready to main') {
             steps {
-                script {
-                    echo "PR ready to main - Starting Pipeline"
-                    echo "PR Action: ${env.action ?: 'manual'}"
-                    echo "PR Number: ${env.number ?: 'N/A'}"
-                    echo "Base Branch: ${env.base_ref ?: 'main'}"
-                    echo "Head Branch: ${env.head_ref ?: 'unknown'}"
-                    
-                    checkout scm
-                    sh 'ls -la'
-                    echo "Code checked out successfully"
-                }
+                echo "PR ready to main - Starting Pipeline"
+                checkout scm
+                sh 'ls -la'
+                echo "Code checked out successfully"
             }
         }
         
@@ -42,6 +17,7 @@ pipeline {
                     echo "Checking for secrets in repository..."
                     
                     def foundSecrets = false
+                    def secretDetails = []
                     
                     // Check for config.txt
                     if (fileExists('config.txt')) {
@@ -54,6 +30,7 @@ pipeline {
                             content.toLowerCase().contains('token') ||
                             content.toLowerCase().contains('password')) {
                             foundSecrets = true
+                            secretDetails.add("config.txt contains sensitive data")
                             echo "SECRETS DETECTED in config.txt"
                         }
                     }
@@ -64,6 +41,7 @@ pipeline {
                         if (fileExists(file)) {
                             echo "Found potential secret file: ${file}"
                             foundSecrets = true
+                            secretDetails.add("Suspicious file: ${file}")
                         }
                     }
                     
@@ -77,13 +55,15 @@ pipeline {
                         echo "POTENTIAL SECRETS FOUND:"
                         echo "${grepResult}"
                         foundSecrets = true
+                        secretDetails.add("Pattern matches in code")
                     }
                     
                     if (foundSecrets) {
-                        echo "SECRETS DETECTED - Pipeline will go to FOUND path"
+                        echo "SECRETS DETECTED - Pipeline will REJECT PR"
                         env.SECRETS_STATUS = "found"
+                        env.SECRET_DETAILS = secretDetails.join(", ")
                     } else {
-                        echo "NO SECRETS DETECTED - Pipeline will go to NOT FOUND path"
+                        echo "NO SECRETS DETECTED - Pipeline will SUCCEED"
                         env.SECRETS_STATUS = "not_found"
                     }
                 }
@@ -108,34 +88,29 @@ pipeline {
                 script {
                     echo "PR AUTOMATICALLY REJECTED"
                     echo "Reason: Secrets detected in repository"
-                    echo "Action Required: Remove all secrets and push again"
-                    echo "Details of secrets found above in 'Check the secrets' stage"
+                    echo "Details: ${env.SECRET_DETAILS}"
                     
-                    // Create rejection report
-                    writeFile(
-                        file: 'SECURITY_REJECTION_REPORT.txt',
-                        text: """
-SECURITY SCAN REJECTION REPORT
-=============================
-Date: ${new Date()}
-PR Number: ${env.number ?: 'N/A'}
-Branch: ${env.head_ref ?: 'unknown'} -> ${env.base_ref ?: 'main'}
-
-REASON: Secrets/sensitive data detected in repository
-
-ACTION REQUIRED:
-1. Remove all secrets from your code
-2. Use environment variables for sensitive data
-3. Use secure storage solutions (HashiCorp Vault, AWS Secrets Manager, etc.)
-4. Commit the cleaned code
-5. Push again to re-trigger the pipeline
-
-This PR is automatically rejected for security reasons.
-Contact your DevOps team if you need help with secret management.
-                        """
-                    )
+                    // Set GitHub commit status to failure
+                    if (env.GIT_COMMIT) {
+                        try {
+                            // This requires GitHub plugin and credentials
+                            step([
+                                $class: 'GitHubCommitStatusSetter',
+                                reposSource: [$class: 'ManuallyEnteredRepositorySource', url: 'https://github.com/nidhi986/Jenkins-pipeline'],
+                                commitShaSource: [$class: 'ManuallyEnteredShaSource', sha: env.GIT_COMMIT],
+                                contextSource: [$class: 'ManuallyEnteredCommitContextSource', context: 'jenkins/security-scan'],
+                                statusResultSource: [$class: 'ConditionalStatusResultSource', results: [
+                                    [$class: 'AnyBuildResult', message: 'Security scan failed - secrets detected', state: 'FAILURE']
+                                ]]
+                            ])
+                            echo "GitHub PR status set to FAILURE"
+                        } catch (Exception e) {
+                            echo "Could not set GitHub status: ${e.message}"
+                            echo "Make sure GitHub plugin is installed and credentials are configured"
+                        }
+                    }
                     
-                    error("PR rejected due to secrets in code")
+                    error("PR rejected due to secrets in code: ${env.SECRET_DETAILS}")
                 }
             }
         }
@@ -145,113 +120,29 @@ Contact your DevOps team if you need help with secret management.
                 expression { env.SECRETS_STATUS == "not_found" }
             }
             steps {
-                echo "Path: NOT FOUND - No secrets detected"
-                echo "Security scan passed successfully"
-                echo "Proceeding to manual review step..."
-            }
-        }
-        
-        stage('Review can approve the request and merge it') {
-            when {
-                expression { env.SECRETS_STATUS == "not_found" }
-            }
-            steps {
                 script {
-                    echo "MANUAL REVIEW REQUIRED"
-                    echo "Security scan passed - no secrets detected"
-                    echo "Requesting human approval for code review..."
+                    echo "Path: NOT FOUND - No secrets detected"
+                    echo "Security scan passed successfully"
                     
-                    try {
-                        timeout(time: 15, unit: 'MINUTES') {
-                            def approval = input(
-                                message: "PR Security Check Passed - Manual Review Required",
-                                parameters: [
-                                    choice(
-                                        name: 'DECISION',
-                                        choices: ['APPROVE', 'REJECT'],
-                                        description: 'Review the code changes and make a decision'
-                                    ),
-                                    string(
-                                        name: 'REVIEWER_COMMENTS',
-                                        defaultValue: '',
-                                        description: 'Optional review comments or concerns'
-                                    )
-                                ],
-                                submitterParameter: 'REVIEWER',
-                                ok: 'Submit Review'
-                            )
-                            
-                            if (approval.DECISION == 'APPROVE') {
-                                echo "PR APPROVED by ${approval.REVIEWER}"
-                                echo "Review Comments: ${approval.REVIEWER_COMMENTS ?: 'No comments provided'}"
-                                echo "PR is ready to merge!"
-                                
-                                // Create approval report
-                                writeFile(
-                                    file: 'APPROVAL_REPORT.txt',
-                                    text: """
-PR APPROVAL REPORT
-=================
-Date: ${new Date()}
-PR Number: ${env.number ?: 'N/A'}
-Branch: ${env.head_ref ?: 'unknown'} -> ${env.base_ref ?: 'main'}
-Reviewer: ${approval.REVIEWER}
-Decision: APPROVED
-Comments: ${approval.REVIEWER_COMMENTS ?: 'No comments provided'}
-
-Security Status: PASSED (No secrets detected)
-Review Status: APPROVED
-Ready to Merge: YES
-                                    """
-                                )
-                                
-                            } else {
-                                echo "PR REJECTED by ${approval.REVIEWER}"
-                                echo "Rejection Reason: ${approval.REVIEWER_COMMENTS ?: 'No reason provided'}"
-                                
-                                // Create rejection report
-                                writeFile(
-                                    file: 'REVIEW_REJECTION_REPORT.txt',
-                                    text: """
-PR REVIEW REJECTION REPORT
-=========================
-Date: ${new Date()}
-PR Number: ${env.number ?: 'N/A'}
-Branch: ${env.head_ref ?: 'unknown'} -> ${env.base_ref ?: 'main'}
-Reviewer: ${approval.REVIEWER}
-Decision: REJECTED
-Reason: ${approval.REVIEWER_COMMENTS ?: 'No reason provided'}
-
-Security Status: PASSED (No secrets detected)
-Review Status: REJECTED
-                                    """
-                                )
-                                
-                                error("PR rejected by reviewer: ${approval.REVIEWER}")
-                            }
+                    // Set GitHub commit status to success
+                    if (env.GIT_COMMIT) {
+                        try {
+                            step([
+                                $class: 'GitHubCommitStatusSetter',
+                                reposSource: [$class: 'ManuallyEnteredRepositorySource', url: 'https://github.com/nidhi986/Jenkins-pipeline'],
+                                commitShaSource: [$class: 'ManuallyEnteredShaSource', sha: env.GIT_COMMIT],
+                                contextSource: [$class: 'ManuallyEnteredCommitContextSource', context: 'jenkins/security-scan'],
+                                statusResultSource: [$class: 'ConditionalStatusResultSource', results: [
+                                    [$class: 'AnyBuildResult', message: 'Security scan passed - no secrets detected', state: 'SUCCESS']
+                                ]]
+                            ])
+                            echo "GitHub PR status set to SUCCESS"
+                        } catch (Exception e) {
+                            echo "Could not set GitHub status: ${e.message}"
                         }
-                    } catch (Exception e) {
-                        echo "Review timeout - no approval received within 15 minutes"
-                        echo "Pipeline will fail due to lack of approval"
-                        
-                        writeFile(
-                            file: 'TIMEOUT_REPORT.txt',
-                            text: """
-PR REVIEW TIMEOUT REPORT
-=======================
-Date: ${new Date()}
-PR Number: ${env.number ?: 'N/A'}
-Branch: ${env.head_ref ?: 'unknown'} -> ${env.base_ref ?: 'main'}
-
-Security Status: PASSED (No secrets detected)
-Review Status: TIMEOUT (No reviewer response within 15 minutes)
-
-Action Required: Re-run pipeline and complete review within timeout period.
-                            """
-                        )
-                        
-                        error("No approval received within timeout period")
                     }
+                    
+                    echo "PR approved automatically - ready to merge"
                 }
             }
         }
@@ -260,36 +151,27 @@ Action Required: Re-run pipeline and complete review within timeout period.
     post {
         always {
             script {
-                echo "Pipeline Summary:"
-                echo "=================="
-                echo "PR Number: ${env.number ?: 'N/A'}"
-                echo "Branch: ${env.head_ref ?: 'unknown'} -> ${env.base_ref ?: 'main'}"
+                echo "Pipeline completed successfully"
+                echo "Build: #${env.BUILD_NUMBER}"
+                echo "Branch: ${env.GIT_BRANCH ?: 'unknown'}"
                 echo "Secrets Status: ${env.SECRETS_STATUS ?: 'unknown'}"
-                echo "Build Result: ${currentBuild.result ?: 'IN_PROGRESS'}"
                 
-                // Archive any reports created
-                archiveArtifacts artifacts: '*_REPORT.txt', allowEmptyArchive: true
-            }
-        }
-        
-        success {
-            echo "Pipeline SUCCESS: PR approved and ready to merge"
-            echo "All security checks passed and manual review completed"
-        }
-        
-        failure {
-            echo "Pipeline FAILED: PR blocked"
-            script {
                 if (env.SECRETS_STATUS == "found") {
-                    echo "Failure Reason: Secrets detected in repository"
+                    echo "Result: PR blocked on GitHub due to secrets"
                 } else {
-                    echo "Failure Reason: Manual review rejected or timed out"
+                    echo "Result: PR approved on GitHub"
                 }
             }
         }
         
-        aborted {
-            echo "Pipeline ABORTED: Build was cancelled"
+        success {
+            script {
+                if (env.SECRETS_STATUS == "found") {
+                    echo "Pipeline SUCCESS: Secrets detected and PR blocked on GitHub"
+                } else {
+                    echo "Pipeline SUCCESS: No secrets found, PR can be merged"
+                }
+            }
         }
     }
 }
