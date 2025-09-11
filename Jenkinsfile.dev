@@ -1,6 +1,8 @@
 pipeline {
     agent any
-    
+    triggers {
+        githubPush()  // Triggers on push events
+    }
     stages {
         stage('PR Ready to Main') {
             steps {
