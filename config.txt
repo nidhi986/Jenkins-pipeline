@@ -1,3 +1,6 @@
-api_key=sk-1234567890abcdefghijklmnop
-password=mysecretpassword123
-database_token=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+app_name=jenkins-pipeline
+environment=development
+log_level=info
+database_host=localhost
+port=8080
+timeout=30
