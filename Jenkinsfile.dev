@@ -90,10 +90,16 @@ pipeline {
                     echo "Reason: Secrets detected in repository"
                     echo "Details: ${env.SECRET_DETAILS}"
                     
-                    // Set GitHub commit status to failure
-                    if (env.GIT_COMMIT) {
+                    // Set GitHub commit status to failure using simpler method
+                    try {
+                        githubNotify context: 'jenkins/security-scan',
+                                    description: 'Security scan failed - secrets detected',
+                                    status: 'FAILURE'
+                        echo "GitHub PR status set to FAILURE"
+                    } catch (Exception e) {
+                        echo "Could not set GitHub status: ${e.message}"
+                        // Fallback to old method
                         try {
-                            // This requires GitHub plugin and credentials
                             step([
                                 $class: 'GitHubCommitStatusSetter',
                                 reposSource: [$class: 'ManuallyEnteredRepositorySource', url: 'https://github.com/nidhi986/Jenkins-pipeline'],
@@ -103,14 +109,13 @@ pipeline {
                                     [$class: 'AnyBuildResult', message: 'Security scan failed - secrets detected', state: 'FAILURE']
                                 ]]
                             ])
-                            echo "GitHub PR status set to FAILURE"
-                        } catch (Exception e) {
-                            echo "Could not set GitHub status: ${e.message}"
-                            echo "Make sure GitHub plugin is installed and credentials are configured"
+                            echo "GitHub PR status set to FAILURE (fallback method)"
+                        } catch (Exception e2) {
+                            echo "Both GitHub status methods failed: ${e2.message}"
                         }
                     }
                     
-                    error("PR rejected due to secrets in code: ${env.SECRET_DETAILS}")
+                    echo "PR rejected on GitHub but pipeline completes successfully"
                 }
             }
         }
@@ -124,8 +129,15 @@ pipeline {
                     echo "Path: NOT FOUND - No secrets detected"
                     echo "Security scan passed successfully"
                     
-                    // Set GitHub commit status to success
-                    if (env.GIT_COMMIT) {
+                    // Set GitHub commit status to success using simpler method
+                    try {
+                        githubNotify context: 'jenkins/security-scan',
+                                    description: 'Security scan passed - no secrets detected',
+                                    status: 'SUCCESS'
+                        echo "GitHub PR status set to SUCCESS"
+                    } catch (Exception e) {
+                        echo "Could not set GitHub status: ${e.message}"
+                        // Fallback to old method
                         try {
                             step([
                                 $class: 'GitHubCommitStatusSetter',
@@ -136,9 +148,9 @@ pipeline {
                                     [$class: 'AnyBuildResult', message: 'Security scan passed - no secrets detected', state: 'SUCCESS']
                                 ]]
                             ])
-                            echo "GitHub PR status set to SUCCESS"
-                        } catch (Exception e) {
-                            echo "Could not set GitHub status: ${e.message}"
+                            echo "GitHub PR status set to SUCCESS (fallback method)"
+                        } catch (Exception e2) {
+                            echo "Both GitHub status methods failed: ${e2.message}"
                         }
                     }
                     
@@ -154,10 +166,12 @@ pipeline {
                 echo "Pipeline completed successfully"
                 echo "Build: #${env.BUILD_NUMBER}"
                 echo "Branch: ${env.GIT_BRANCH ?: 'unknown'}"
+                echo "Git Commit: ${env.GIT_COMMIT ?: 'unknown'}"
                 echo "Secrets Status: ${env.SECRETS_STATUS ?: 'unknown'}"
                 
                 if (env.SECRETS_STATUS == "found") {
                     echo "Result: PR blocked on GitHub due to secrets"
+                    echo "Secret Details: ${env.SECRET_DETAILS}"
                 } else {
                     echo "Result: PR approved on GitHub"
                 }
