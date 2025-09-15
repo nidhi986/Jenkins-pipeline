@@ -1,0 +1,7 @@
+app_name=jenkins-pipeline
+environment=development
+log_level=info
+database_host=localhost
+port=8080
+timeout=30
+# Last updated: Mon Sep 15 13:30:28 IST 2025
