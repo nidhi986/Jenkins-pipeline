@@ -1,5 +1,5 @@
 app_name=jenkins-pipeline
 environment=development
 database_host=localhost
-port=8000
+port=80
 # Last updated: Mon Sep 15 13:30:28 IST 2025
